@@ -1,4 +1,5 @@
 import numpy as np
+import multiprocessing as mp
 import time
 import datetime
 
@@ -26,6 +27,28 @@ def read_data(dataFileName):
             samples.append(Sample(x, y))
     ifile.close()
     return samples
+
+def get_start_end_indices(N, process_number):
+    #N is the length of input vector. Return start_index(inclusive) and end_index(inclusive) for each processor.
+    assert(N >= process_number)
+    start_indices = []
+    end_indices = []
+    slice_size = N/process_number
+    remainder = N%process_number
+    start_index = 0
+    end_index = -1
+    for i in range(process_number):
+        if (i < remainder):
+            start_index = end_index + 1
+            start_indices.append(start_index)
+            end_index = start_index + slice_size
+            end_indices.append(end_index)
+        else:
+            start_index = end_index + 1
+            start_indices.append(start_index)
+            end_index = start_index + slice_size - 1
+            end_indices.append(end_index)
+    return start_indices, end_indices
 
 def Z(net):
     result = 1.0
@@ -77,10 +100,33 @@ def forward_propagation(sample, weight_matrices, biases, activation_function):
     net = linear_transform(weight_matrices[-1], biases[-1], x)
     return Loss(net, sample)
 
-def forward_propagation_total(samples, weight_matrices, biases, activation_function):
+def forward_propagation_subsamples(subsamples, weight_matrices, biases, activation_function, output):
+    assert(len(weight_matrices) == len(biases))
     result = 0.0
-    for sample in samples:
+    for sample in subsamples:
         result += forward_propagation(sample, weight_matrices, biases, activation_function)
+    output.put(result)
+
+def forward_propagation_total(samples, weight_matrices, biases, activation_function, process_number):
+    result = 0.0
+    start_indices, end_indices = get_start_end_indices(len(samples), process_number)
+    output = mp.Queue()
+    processes = []
+    for i in range(process_number):
+        start_index = start_indices[i]
+        end_index = end_indices[i]
+        p = mp.Process(target = forward_propagation_subsamples, args = (samples[start_index : end_index+1], weight_matrices, biases, activation_function, output))
+        processes.append(p)
+
+    for p in processes:
+        p.start()
+
+    sub_results = [output.get() for p in processes]
+
+    for p in processes:
+        p.join()
+
+    result = sum(sub_results)
     return result/float(len(samples))
 
 def relu(x):
@@ -159,17 +205,52 @@ def gradient(weight_matrices, biases, sample, activation_function, activation_fu
     result.append(temp)
     return result
 
-def gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime):
+def gradient_sub_samples(weight_matrices, biases, subsamples, activation_function, activation_function_prime, output):
+    import os
+    pid = os.getpid()
+    start_time = time.time()
     result = []
-    for i in range(len(samples)):
-        sample = samples[i]
-        g = gradient(weight_matrices, biases, sample, activation_function, activation_function_prime)
+    for i in range(len(subsamples)):
+        #print "sample index = " + str(i) + ", pid = " + str(pid)
+        g = gradient(weight_matrices, biases, subsamples[i], activation_function, activation_function_prime)
         if (i == 0):
             for j in range(len(g)):
                 result.append(g[j])
         else:
             for j in range(len(g)):
                 result[j] = result[j] + g[j]
+    output.put(result)
+    end_time = time.time()
+
+def gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime, process_number):
+    result = []
+    start_indices, end_indices = get_start_end_indices(len(samples), process_number)
+    output = mp.Queue()
+    processes = []
+    for i in range(process_number):
+        start_index = start_indices[i]
+        end_index = end_indices[i]
+        p = mp.Process(target = gradient_sub_samples, args = (weight_matrices, biases, samples[start_index : end_index+1], activation_function, activation_function_prime, output))
+        processes.append(p)
+
+    for p in processes:
+        p.start()
+
+    sub_results = []
+    for i in range(len(processes)):
+        sub_results.append(output.get())
+
+    for p in processes:
+        p.join()
+
+    for i in range(len(sub_results)):
+        sub_result = sub_results[i]
+        if (i == 0):
+            for j in range(len(sub_result)):
+                result.append(sub_result[j])
+        else:
+            for j in range(len(sub_result)):
+                result[j] = result[j] + sub_result[j]
     for i in range(len(result)):
         result[i] = result[i]/float(len(samples))
     return result
@@ -180,13 +261,13 @@ def gradient_norm(g):
         result += np.linalg.norm(g[i])
     return result
 
-def gradient_descent(eta, samples, weight_matrices, biases, activation_function, activation_function_prime):
+def gradient_descent(eta, samples, weight_matrices, biases, activation_function, activation_function_prime, process_number):
     counter = 0
     iterationMax = 10
     errorLimit = 1.0e-3
     while(counter < iterationMax):
         counter += 1
-        g = gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime)
+        g = gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime, process_number)
         weight_matrices[1] = weight_matrices[1] - eta*g[0]
         biases[1] = biases[1] - eta*g[1].transpose()[0]
         weight_matrices[0] = weight_matrices[0] - eta*g[2]
@@ -201,21 +282,21 @@ def add_list(a, b):
         c.append(a[i] + b[i])
     return c
 
-def adam(eta, samples, weight_matrices, biases, activation_function, activation_function_prime):
+def adam(eta, samples, weight_matrices, biases, activation_function, activation_function_prime, process_number):
     assert(eta > 0)
     beta_1 = 0.9
     beta_2 = 0.99
     assert(beta_1 > 0 and beta_1 < 1)
     assert(beta_2 > 0 and beta_2 < 1)
     counter = 0
-    iterationMax = 20
+    iterationMax = 10
     eps = 1.0e-8
     errorLimit = 1.0e-3
     m = []
     v = []
     while(counter < iterationMax):
         counter += 1
-        g = gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime)
+        g = gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime, process_number)
         if (counter == 1):
             m = map(lambda ele: (1 - beta_1)*ele, g)
             v = map(lambda ele: (1 - beta_2)*ele**2, g)
@@ -229,24 +310,28 @@ def adam(eta, samples, weight_matrices, biases, activation_function, activation_
         print "Counter = ", counter, ", gradient norm = ", gradient_norm(g), ", time = ", datetime.datetime.now()
     return weight_matrices, biases
 
-def gradient_check(samples, weight_matrices, biases, activation_function):
-    E = forward_propagation_total(samples, weight_matrices, biases, activation_function)
+def gradient_check(samples, weight_matrices, biases, activation_function, process_number):
+    print "Calculating original E ... "
+    E = forward_propagation_total(samples, weight_matrices, biases, activation_function, process_number)
+    print "Original E calculated. "
     eps = 1.0e-6
     db_1 = []
     db_0 = []
     for i in range(len(biases[0])):
+        print "i = " + str(i+1) + ", total = " + str(len(biases[0]))
         biases[0][i] += eps
-        delta_E = forward_propagation_total(samples, weight_matrices, biases, activation_function) - E
+        delta_E = forward_propagation_total(samples, weight_matrices, biases, activation_function, process_number) - E
         db_0.append(delta_E/eps)
         biases[0][i] -= eps
     for i in range(len(biases[1])):
+        print "i = " + str(i+1) + ", total = " + str(len(biases[1]))
         biases[1][i] += eps
-        delta_E = forward_propagation_total(samples, weight_matrices, biases, activation_function) - E
+        delta_E = forward_propagation_total(samples, weight_matrices, biases, activation_function, process_number) - E
         db_1.append(delta_E/eps)
         biases[1][i] -= eps
     print "db_1: ", db_1
     print "db_0: ", db_0
-    return np.asarray(db_0), np.asarray(db_1)
+    return db_1, db_0 
 
 def matrix_to_string(matrix):
     result = "\n".join(map(lambda row: ",".join(map(str, row)), matrix))
@@ -290,10 +375,10 @@ def read_model(model_file_name):
     assert(len(weight_matrices) == len(biases))
     return weight_matrices, biases
 
-def train_model(trainFileName, eta, activation_function, activation_function_prime):
+def train_model(trainFileName, eta, activation_function, activation_function_prime, process_number):
     print "Reading in " + trainFileName
     samples = read_data(trainFileName)
-    print "File reading finished."
+    print "File reading finished. "
     feature_length = len(samples[0].x)
     weight_matrices = []
     biases = []
@@ -304,12 +389,18 @@ def train_model(trainFileName, eta, activation_function, activation_function_pri
     W, b = initialize_parameters(9, 100)
     weight_matrices.append(W)
     biases.append(b)
-    #weight_matrices, biases = gradient_descent(eta, samples, weight_matrices, biases, activation_function, activation_function_prime)
-    print "Running Adam ... "
-    weight_matrices, biases = adam(eta, samples, weight_matrices, biases, activation_function, activation_function_prime)
-    print "Optimization finished. Saving model ... "
+    g = gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime, process_number)
+    icheck = False
+    if (icheck):
+        db_1, db_0 = gradient_check(samples, weight_matrices, biases, activation_function, process_number)
+        db_1_formula = g[1].transpose()[0]
+        db_0_formula = g[3].transpose()[0]
+        print "db_1(formula):", db_1_formula
+        print "db_0(formula): ", db_0_formula
+        print "Error of db_1 = " + str(np.linalg.norm(db_1 - db_1_formula))
+        print "Error of db_0 = " + str(np.linalg.norm(db_0 - db_0_formula))
+    weight_matrices, biases = adam(eta, samples, weight_matrices, biases, activation_function, activation_function_prime, process_number)
     save_model(weight_matrices, biases, "model_parameters.txt")
-    print "Model training finished. "
     return weight_matrices, biases
 
 def probability(sample, weight_matrices, biases, activation_function, category_number):
@@ -330,13 +421,13 @@ def probability(sample, weight_matrices, biases, activation_function, category_n
             p.append(np.exp(net[i-1])/partition)
     return p
 
-def cross_validation(trainFileName, testFileName):
+def cross_validation(trainFileName, testFileName, process_number):
     start_time = time.time()
     eta = 2.0e-2
     activation_function = relu
     activation_function_prime = relu_prime
     print "Beginning to train the model ... "
-    weight_matrices, biases = train_model(trainFileName, eta, activation_function, activation_function_prime)
+    weight_matrices, biases = train_model(trainFileName, eta, activation_function, activation_function_prime, process_number)
     print "Model training finished. Testing the model ..."
     test_samples = read_data(testFileName)
     label_set = set(map(lambda sample: sample.y, test_samples))
@@ -356,12 +447,18 @@ def cross_validation(trainFileName, testFileName):
     ofile.close()
     print "Done. "
     end_time = time.time()
-    print "Total time used in seconds = " + str(end_time - start_time)
+    print "Total time used = " + str(end_time - start_time)
 
 def main():
     import sys
+    if (len(sys.argv) != 2):
+        print "process_number = sys.argv[1]. "
+        return -1
+
+    process_number = int(sys.argv[1])
     eta = 1.0e-3
-    cross_validation("train.csv", "test.csv")
+    train_model("train.csv", eta, relu, relu_prime, process_number)
+    #cross_validation("train.csv", "test.csv", process_number)
     return 0
 
 if __name__ == "__main__":
