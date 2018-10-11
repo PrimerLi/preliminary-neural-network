@@ -2,6 +2,7 @@ import numpy as np
 import multiprocessing as mp
 import time
 import datetime
+import os
 
 class Sample:
     def __init__(self, x, y):
@@ -289,9 +290,9 @@ def adam(eta, samples, weight_matrices, biases, activation_function, activation_
     assert(beta_1 > 0 and beta_1 < 1)
     assert(beta_2 > 0 and beta_2 < 1)
     counter = 0
-    iterationMax = 10
+    iterationMax = 300
     eps = 1.0e-8
-    errorLimit = 1.0e-3
+    error_limit = 1.0e-3
     m = []
     v = []
     while(counter < iterationMax):
@@ -303,11 +304,16 @@ def adam(eta, samples, weight_matrices, biases, activation_function, activation_
         else:
             m = add_list(map(lambda ele: beta_1*ele, m), map(lambda ele: (1 - beta_1)*ele, g))
             v = add_list(map(lambda ele: beta_2*ele, v), map(lambda ele: (1 - beta_2)*ele**2, g))
+        #m = map(lambda ele: ele/(1 - beta_1**counter), m)
+        #v = map(lambda ele: ele/(1 - beta_2**counter), v)
         weight_matrices[1] = weight_matrices[1] - eta*m[0]/(np.sqrt(v[0]) + eps)
         biases[1] = biases[1] - eta*(m[1]/(np.sqrt(v[1]) + eps)).transpose()[0]
         weight_matrices[0] = weight_matrices[0] - eta*m[2]/(eps + np.sqrt(v[2]))
         biases[0] = biases[0] - eta*(m[3]/(eps + np.sqrt(v[3]))).transpose()[0]
-        print "Counter = ", counter, ", gradient norm = ", gradient_norm(g), ", time = ", datetime.datetime.now()
+        error = gradient_norm(g)
+        print "Counter = ", counter, ", gradient norm = ", error, ", time = ", datetime.datetime.now()
+        if (error < error_limit):
+            break
     return weight_matrices, biases
 
 def gradient_check(samples, weight_matrices, biases, activation_function, process_number):
@@ -380,18 +386,22 @@ def train_model(trainFileName, eta, activation_function, activation_function_pri
     samples = read_data(trainFileName)
     print "File reading finished. "
     feature_length = len(samples[0].x)
-    weight_matrices = []
-    biases = []
-    layer_number = 2
-    W, b = initialize_parameters(100, feature_length)
-    weight_matrices.append(W)
-    biases.append(b)
-    W, b = initialize_parameters(9, 100)
-    weight_matrices.append(W)
-    biases.append(b)
-    g = gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime, process_number)
+    modelFileName = "model_parameters.txt"
+    if (not os.path.exists(modelFileName)):
+        weight_matrices = []
+        biases = []
+        layer_number = 2
+        W, b = initialize_parameters(100, feature_length)
+        weight_matrices.append(W)
+        biases.append(b)
+        W, b = initialize_parameters(9, 100)
+        weight_matrices.append(W)
+        biases.append(b)
+    else:
+        weight_matrices, biases = read_model(modelFileName)
     icheck = False
     if (icheck):
+        g = gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime, process_number)
         db_1, db_0 = gradient_check(samples, weight_matrices, biases, activation_function, process_number)
         db_1_formula = g[1].transpose()[0]
         db_0_formula = g[3].transpose()[0]
@@ -423,7 +433,7 @@ def probability(sample, weight_matrices, biases, activation_function, category_n
 
 def cross_validation(trainFileName, testFileName, process_number):
     start_time = time.time()
-    eta = 2.0e-2
+    eta = 1.0e-2
     activation_function = relu
     activation_function_prime = relu_prime
     print "Beginning to train the model ... "
@@ -456,9 +466,7 @@ def main():
         return -1
 
     process_number = int(sys.argv[1])
-    eta = 1.0e-3
-    train_model("train.csv", eta, relu, relu_prime, process_number)
-    #cross_validation("train.csv", "test.csv", process_number)
+    cross_validation("train.csv", "test.csv", process_number)
     return 0
 
 if __name__ == "__main__":
