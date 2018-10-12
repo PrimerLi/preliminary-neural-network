@@ -287,7 +287,7 @@ def adam(eta, samples, weight_matrices, biases, activation_function, activation_
     counter = 0
     iterationMax = 300
     eps = 1.0e-8
-    error_limit = 1.0e-5
+    error_limit = 1.0e-3
     m = []
     v = []
     while(counter < iterationMax):
@@ -301,10 +301,14 @@ def adam(eta, samples, weight_matrices, biases, activation_function, activation_
             v = add_list(map(lambda ele: beta_2*ele, v), map(lambda ele: (1 - beta_2)*ele**2, g))
         #m = map(lambda ele: ele/(1 - beta_1**counter), m)
         #v = map(lambda ele: ele/(1 - beta_2**counter), v)
-        weight_matrices[1] = weight_matrices[1] - eta*m[0]/(np.sqrt(v[0]) + eps)
-        biases[1] = biases[1] - eta*(m[1]/(np.sqrt(v[1]) + eps)).transpose()[0]
-        weight_matrices[0] = weight_matrices[0] - eta*m[2]/(eps + np.sqrt(v[2]))
-        biases[0] = biases[0] - eta*(m[3]/(eps + np.sqrt(v[3]))).transpose()[0]
+        L = len(weight_matrices) + 1
+        i = 0
+        while(i < len(m)):
+            matrix_index = L - 2 - i/2
+            weight_matrices[matrix_index] = weight_matrices[matrix_index] - eta*m[i]/(np.sqrt(v[i]) + eps)
+            i = i + 1
+            biases[matrix_index] = biases[matrix_index] - eta*m[i]/(np.sqrt(v[i]) + eps)
+            i = i + 1
         error = gradient_norm(g)
         print "Counter = ", counter, ", gradient norm = ", error, ", time = ", datetime.datetime.now()
         if (error < error_limit):
@@ -432,7 +436,7 @@ def probability(sample, weight_matrices, biases, activation_function, category_n
 
 def cross_validation(trainFileName, testFileName, process_number):
     start_time = time.time()
-    eta = 1.0e-2
+    eta = 5.0e-3
     activation_function = relu
     activation_function_prime = relu_prime
     print "Beginning to train the model ... "
@@ -466,8 +470,8 @@ def main():
         return -1
 
     process_number = int(sys.argv[1])
-    train_model("train.csv", 1.0e-2, relu, relu_prime, process_number, True)
-    #cross_validation("train.csv", "test.csv", process_number)
+    #train_model("train.csv", 1.0e-2, relu, relu_prime, process_number, True)
+    cross_validation("train.csv", "test.csv", process_number)
     return 0
 
 if __name__ == "__main__":
