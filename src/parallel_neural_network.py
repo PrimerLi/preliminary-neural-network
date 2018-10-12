@@ -73,7 +73,7 @@ def Loss_total(net_inputs, samples):
         result += Loss(net_inputs[i], samples[i])
     return result/float(len(samples))
 
-def linear_transform(W, b, x):
+def affine_transform(W, b, x):
     (row, col) = W.shape
     assert(col == len(x))
     return W.dot(x) + b
@@ -95,10 +95,10 @@ def forward_propagation(sample, weight_matrices, biases, activation_function):
     for i in range(len(weight_matrices) - 1):
         W = weight_matrices[i]
         b = biases[i]
-        net = linear_transform(W, b, x)
+        net = affine_transform(W, b, x)
         output_vector = map(activation_function, net)
         x = output_vector
-    net = linear_transform(weight_matrices[-1], biases[-1], x)
+    net = affine_transform(weight_matrices[-1], biases[-1], x)
     return Loss(net, sample)
 
 def forward_propagation_subsamples(subsamples, weight_matrices, biases, activation_function, output):
@@ -149,14 +149,6 @@ def sigmoid_prime(x):
     y = sigmoid(x)
     return y*(1.0 - y)
 
-def flatten(weight_matrix):
-    (row, col) = weight_matrix.shape
-    result = []
-    for i in range(row):
-        for j in range(col):
-            result.append(weight_matrix[i, j])
-    return result
-
 def nablaE(net, sample):
     y = sample.y
     assert(y >= 0 and y <= len(net))
@@ -169,7 +161,7 @@ def nablaE(net, sample):
         else:
             delta = 0
         result[i] = np.exp(net[i])/(1 + sum(map(np.exp, net))) - delta
-    return result
+    return result 
 
 def dyadic_product(a, b):
     a = a.reshape((len(a), 1))
@@ -185,23 +177,24 @@ def matrix_vector_element_wise_product(W, v):
             result[i, j] = W[i, j] * v[j]
     return result
 
+def to_column(a):
+    return a.reshape((len(a), 1))
+
 def gradient(weight_matrices, biases, sample, activation_function, activation_function_prime):
     assert(len(weight_matrices) == len(biases))
     W_0 = weight_matrices[0]
     W_1 = weight_matrices[1]
     b_0 = biases[0]
     b_1 = biases[1]
-    x_0 = sample.x
-    net_0 = linear_transform(W_0, b_0, x_0)
+    x_0 = sample.x 
+    net_0 = affine_transform(W_0, b_0, x_0)
     x_1 = np.asarray(map(activation_function, net_0))
-    net_1 = linear_transform(W_1, b_1, x_1)
+    net_1 = affine_transform(W_1, b_1, x_1)
     nabla = nablaE(net_1, sample)
-    nabla = nabla.reshape((len(nabla), 1))
     result = []
     result.append(dyadic_product(nabla, x_1))
     result.append(nabla)
-    temp = nabla.transpose().dot(matrix_vector_element_wise_product(W_1, map(activation_function_prime, net_0)))
-    temp = temp.transpose()
+    temp = nabla.dot(matrix_vector_element_wise_product(W_1, map(activation_function_prime, net_0)))
     result.append(dyadic_product(temp, x_0))
     result.append(temp)
     return result
@@ -292,7 +285,7 @@ def adam(eta, samples, weight_matrices, biases, activation_function, activation_
     counter = 0
     iterationMax = 300
     eps = 1.0e-8
-    error_limit = 1.0e-3
+    error_limit = 1.0e-5
     m = []
     v = []
     while(counter < iterationMax):
@@ -381,7 +374,7 @@ def read_model(model_file_name):
     assert(len(weight_matrices) == len(biases))
     return weight_matrices, biases
 
-def train_model(trainFileName, eta, activation_function, activation_function_prime, process_number):
+def train_model(trainFileName, eta, activation_function, activation_function_prime, process_number, icheck = False):
     print "Reading in " + trainFileName
     samples = read_data(trainFileName)
     print "File reading finished. "
@@ -399,16 +392,18 @@ def train_model(trainFileName, eta, activation_function, activation_function_pri
         biases.append(b)
     else:
         weight_matrices, biases = read_model(modelFileName)
-    icheck = False
     if (icheck):
+        print "Calculating gradient using formula ... "
         g = gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime, process_number)
+        print "Gradient obtained from formula. "
         db_1, db_0 = gradient_check(samples, weight_matrices, biases, activation_function, process_number)
-        db_1_formula = g[1].transpose()[0]
-        db_0_formula = g[3].transpose()[0]
+        db_1_formula = g[1]
+        db_0_formula = g[3]
         print "db_1(formula):", db_1_formula
         print "db_0(formula): ", db_0_formula
         print "Error of db_1 = " + str(np.linalg.norm(db_1 - db_1_formula))
         print "Error of db_0 = " + str(np.linalg.norm(db_0 - db_0_formula))
+        return 
     weight_matrices, biases = adam(eta, samples, weight_matrices, biases, activation_function, activation_function_prime, process_number)
     save_model(weight_matrices, biases, "model_parameters.txt")
     return weight_matrices, biases
@@ -417,10 +412,10 @@ def probability(sample, weight_matrices, biases, activation_function, category_n
     assert(len(weight_matrices) == len(biases))
     input_vector = sample.x
     for i in range(len(weight_matrices) - 1):
-        net = linear_transform(weight_matrices[i], biases[i], input_vector)
+        net = affine_transform(weight_matrices[i], biases[i], input_vector)
         output_vector = map(activation_function, net)
         input_vector = output_vector
-    net = linear_transform(weight_matrices[-1], biases[-1], input_vector)
+    net = affine_transform(weight_matrices[-1], biases[-1], input_vector)
     assert(category_number == len(net) + 1)
     partition = Z(net)
     p = []
@@ -453,6 +448,7 @@ def cross_validation(trainFileName, testFileName, process_number):
         if (label == prediction):
             correct_count += 1
     accuracy = float(correct_count)/float(len(test_samples))
+    print "Accuracy = " + str(accuracy)
     ofile.write("Accuracy = " + str(accuracy) + "\n")
     ofile.close()
     print "Done. "
@@ -466,6 +462,7 @@ def main():
         return -1
 
     process_number = int(sys.argv[1])
+    #train_model("train.csv", 1.0e-2, relu, relu_prime, process_number, True)
     cross_validation("train.csv", "test.csv", process_number)
     return 0
 
