@@ -180,12 +180,17 @@ def matrix_vector_element_wise_product(W, v):
 def to_column(a):
     return a.reshape((len(a), 1))
 
-def gradient(weight_matrices, biases, sample, activation_function, activation_function_prime):
+def gradient(weight_matrices, biases, sample, activation_function, activation_function_prime, retention_probabilities):
     assert(len(weight_matrices) == len(biases))
+    assert(len(weight_matrices) == len(retention_probabilities))
     x_vectors = []
     net_vectors = []
     x_vectors.append(sample.x)
     for i in range(len(weight_matrices)):
+        for j in range(len(x_vectors[i])):
+            random_number = np.random.random()
+            if (random_number > retention_probabilities[i]):
+                x_vectors[i][j] = 0
         net = weight_matrices[i].dot(x_vectors[i]) + biases[i]
         net_vectors.append(net)
         if (i < len(weight_matrices) - 1):
@@ -201,14 +206,14 @@ def gradient(weight_matrices, biases, sample, activation_function, activation_fu
             intermediate_matrix = intermediate_matrix.dot(matrix_vector_element_wise_product(weight_matrices[i], map(activation_function_prime, net_vectors[i-1])))
     return result
 
-def gradient_sub_samples(weight_matrices, biases, subsamples, activation_function, activation_function_prime, output):
+def gradient_sub_samples(weight_matrices, biases, subsamples, activation_function, activation_function_prime, retention_probabilities, output):
     import os
     pid = os.getpid()
     start_time = time.time()
     result = []
     for i in range(len(subsamples)):
         #print "sample index = " + str(i) + ", pid = " + str(pid)
-        g = gradient(weight_matrices, biases, subsamples[i], activation_function, activation_function_prime)
+        g = gradient(weight_matrices, biases, subsamples[i], activation_function, activation_function_prime, retention_probabilities)
         if (i == 0):
             for j in range(len(g)):
                 result.append(g[j])
@@ -218,7 +223,7 @@ def gradient_sub_samples(weight_matrices, biases, subsamples, activation_functio
     output.put(result)
     end_time = time.time()
 
-def gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime, process_number):
+def gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime, retention_probabilities, process_number):
     result = []
     start_indices, end_indices = get_start_end_indices(len(samples), process_number)
     output = mp.Queue()
@@ -226,7 +231,7 @@ def gradient_total(weight_matrices, biases, samples, activation_function, activa
     for i in range(process_number):
         start_index = start_indices[i]
         end_index = end_indices[i]
-        p = mp.Process(target = gradient_sub_samples, args = (weight_matrices, biases, samples[start_index : end_index+1], activation_function, activation_function_prime, output))
+        p = mp.Process(target = gradient_sub_samples, args = (weight_matrices, biases, samples[start_index : end_index+1], activation_function, activation_function_prime, retention_probabilities, output))
         processes.append(p)
 
     for p in processes:
@@ -278,7 +283,7 @@ def add_list(a, b):
         c.append(a[i] + b[i])
     return c
 
-def adam(eta, samples, weight_matrices, biases, activation_function, activation_function_prime, process_number):
+def adam(eta, samples, weight_matrices, biases, activation_function, activation_function_prime, retention_probabilities, process_number):
     assert(eta > 0)
     beta_1 = 0.9
     beta_2 = 0.99
@@ -292,7 +297,7 @@ def adam(eta, samples, weight_matrices, biases, activation_function, activation_
     v = []
     while(counter < iterationMax):
         counter += 1
-        g = gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime, process_number)
+        g = gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime, retention_probabilities, process_number)
         if (counter == 1):
             m = map(lambda ele: (1 - beta_1)*ele, g)
             v = map(lambda ele: (1 - beta_2)*ele**2, g)
@@ -340,8 +345,9 @@ def matrix_to_string(matrix):
     result = "\n".join(map(lambda row: ",".join(map(str, row)), matrix))
     return result
 
-def save_model(weight_matrices, biases, modelFileName):
+def save_model(weight_matrices, biases, retention_probabilities, modelFileName):
     assert(len(weight_matrices) == len(biases))
+    assert(len(weight_matrices) == len(retention_probabilities))
     ofile = open(modelFileName, "w")
     ofile.write("Number of weight matrices = " + str(len(weight_matrices)) + "\n")
     for i in range(len(weight_matrices)):
@@ -349,6 +355,7 @@ def save_model(weight_matrices, biases, modelFileName):
         ofile.write(matrix_to_string(weight_matrices[i]) + "\n")
         ofile.write("b_" + str(i) + ":\n")
         ofile.write(",".join(map(str, biases[i])) + "\n")
+    ofile.write("Retention probabilities = " + ",".join(map(str, retention_probabilities)) + "\n")
     ofile.close()
 
 def read_model(model_file_name):
@@ -376,31 +383,54 @@ def read_model(model_file_name):
             biases.append(bias)
             i = i+2
     assert(len(weight_matrices) == len(biases))
-    return weight_matrices, biases
+    retention_probabilities = []
+    if ("Retention" in lines[-1]):
+        retention_probabilities = map(float, lines[-1].split(" = ")[-1].split(","))
+    return weight_matrices, biases, retention_probabilities
 
-def train_model(trainFileName, eta, activation_function, activation_function_prime, process_number, icheck = False):
+def train_model(trainFileName, eta, activation_function, activation_function_prime, process_number, batch_number, icheck = False):
+    assert(batch_number >= 1)
     print "Reading in " + trainFileName
     samples = read_data(trainFileName)
+    batch_size = len(samples)/batch_number
+    assert(batch_size > 0)
     print "File reading finished. "
     feature_length = len(samples[0].x)
     modelFileName = "model_parameters.txt"
+
+    def initialize_retention_probabilities(length):
+        retention_probabilities = []
+        for i in range(length):
+            if (i == 0):
+                retention_probabilities.append(1.0)
+            elif(i < length - 1):
+                retention_probabilities.append(1.0)
+            else:
+                retention_probabilities.append(1.0)
+        return retention_probabilities
+
     if (not os.path.exists(modelFileName)):
+        dimensions = []
+        dimensions.append((100, feature_length))
+        dimensions.append((9, dimensions[0][0]))
+        #dimensions.append((9, dimensions[1][0]))
         weight_matrices = []
         biases = []
-        W, b = initialize_parameters(100, feature_length)
-        weight_matrices.append(W)
-        biases.append(b)
-        W, b = initialize_parameters(20, 100)
-        weight_matrices.append(W)
-        biases.append(b)
-        W, b = initialize_parameters(9, 20)
-        weight_matrices.append(W)
-        biases.append(b)
+        for i in range(len(dimensions)):
+            (row, col) = dimensions[i]
+            W, b = initialize_parameters(row, col)
+            weight_matrices.append(W)
+            biases.append(b)
+
+        retention_probabilities = initialize_retention_probabilities(len(weight_matrices))
     else:
-        weight_matrices, biases = read_model(modelFileName)
+        weight_matrices, biases, retention_probabilities = read_model(modelFileName)
+        if (len(retention_probabilities) == 0):
+            retention_probabilities = initialize_retention_probabilities(len(weight_matrices))
     if (icheck):
         print "Calculating gradients using formula ... "
-        g = gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime, process_number)
+        retention_probabilities = map(lambda ele: 1.0, retention_probabilities)
+        g = gradient_total(weight_matrices, biases, samples, activation_function, activation_function_prime, retention_probabilities, process_number)
         print "Gradients obtained from formula. "
         print "Calculating gradients numerially ... "
         db_last, db_0 = gradient_check(samples, weight_matrices, biases, activation_function, process_number)
@@ -411,13 +441,23 @@ def train_model(trainFileName, eta, activation_function, activation_function_pri
         print "db_0(formula): ", db_0_formula
         print "Error of db_last = " + str(np.linalg.norm(db_last - db_last_formula))
         print "Error of db_0 = " + str(np.linalg.norm(db_0 - db_0_formula))
-        return 
-    weight_matrices, biases = adam(eta, samples, weight_matrices, biases, activation_function, activation_function_prime, process_number)
-    save_model(weight_matrices, biases, "model_parameters.txt")
-    return weight_matrices, biases
+        return
+    
+    #batch_size = len(samples)/batch_number
+    for i in range(batch_number):
+        print "Batch index = " + str(i+1) + ", total = " + str(batch_number)
+        if (i < batch_number - 1):
+            weight_matrices, biases = adam(eta, samples[i*batch_size : (i+1)*batch_size], weight_matrices, biases, activation_function, activation_function_prime, retention_probabilities, process_number)
+        else:
+            weight_matrices, biases = adam(eta, samples[i*batch_size : ], weight_matrices, biases, activation_function, activation_function_prime, retention_probabilities, process_number)
+    save_model(weight_matrices, biases, retention_probabilities, "model_parameters.txt")
+    return weight_matrices, biases, retention_probabilities
 
-def probability(sample, weight_matrices, biases, activation_function, category_number):
+def probability(sample, weight_matrices, biases, retention_probabilities, activation_function, category_number):
     assert(len(weight_matrices) == len(biases))
+    assert(len(weight_matrices) == len(retention_probabilities))
+    for i in range(len(weight_matrices)):
+        weight_matrices[i] = retention_probabilities[i]*weight_matrices[i]
     input_vector = sample.x
     for i in range(len(weight_matrices) - 1):
         net = affine_transform(weight_matrices[i], biases[i], input_vector)
@@ -434,13 +474,13 @@ def probability(sample, weight_matrices, biases, activation_function, category_n
             p.append(np.exp(net[i-1])/partition)
     return p
 
-def cross_validation(trainFileName, testFileName, process_number):
+def cross_validation(trainFileName, testFileName, process_number, batch_number):
     start_time = time.time()
     eta = 5.0e-3
     activation_function = relu
     activation_function_prime = relu_prime
     print "Beginning to train the model ... "
-    weight_matrices, biases = train_model(trainFileName, eta, activation_function, activation_function_prime, process_number)
+    weight_matrices, biases, retention_probabilities = train_model(trainFileName, eta, activation_function, activation_function_prime, process_number, batch_number)
     print "Model training finished. Testing the model ..."
     test_samples = read_data(testFileName)
     label_set = set(map(lambda sample: sample.y, test_samples))
@@ -450,7 +490,7 @@ def cross_validation(trainFileName, testFileName, process_number):
     for i in range(len(test_samples)):
         sample = test_samples[i]
         label = sample.y
-        p = probability(sample, weight_matrices, biases, activation_function, category_number)
+        p = probability(sample, weight_matrices, biases, retention_probabilities, activation_function, category_number)
         prediction = np.argmax(p)
         ofile.write(str(label) + "," + str(prediction) + "\n")
         if (label == prediction):
@@ -463,15 +503,44 @@ def cross_validation(trainFileName, testFileName, process_number):
     end_time = time.time()
     print "Total time used = " + str(end_time - start_time)
 
+def test_model(modelFileName, testFileName):
+    assert(os.path.exists(modelFileName))
+    assert(os.path.exists(testFileName))
+    print "Reading " + str(testFileName)
+    test_samples = read_data(testFileName)
+    label_set = set(map(lambda sample: sample.y, test_samples))
+    category_number = len(label_set)
+    print testFileName + " reading finished. Reading " + modelFileName
+    weight_matrices, biases, retention_probabilities = read_model(modelFileName)
+    if (len(retention_probabilities) == 0):
+        for i in range(len(biases)):
+            retention_probabilities.append(1.0)
+    
+    print "Model reading finished. Testing the model ... "
+    correct_count = 0
+    activation_function = relu
+    for i in range(len(test_samples)):
+        sample = test_samples[i]
+        label = sample.y
+        p = probability(sample, weight_matrices, biases, retention_probabilities, activation_function, category_number)
+        prediction = np.argmax(p)
+        if (label == prediction):
+            correct_count += 1
+    accuracy = float(correct_count)/float(len(test_samples))
+    print "Accuracy = " + str(accuracy)
+    print "Model testing finished. " 
+
 def main():
     import sys
-    if (len(sys.argv) != 2):
-        print "process_number = sys.argv[1]. "
+    if (len(sys.argv) != 3):
+        print "process_number = sys.argv[1], batch_number = sys.argv[2]. "
         return -1
 
     process_number = int(sys.argv[1])
+    batch_number = int(sys.argv[2])
     #train_model("train.csv", 1.0e-2, relu, relu_prime, process_number, True)
-    cross_validation("train.csv", "test.csv", process_number)
+    #cross_validation("train.csv", "test.csv", process_number, batch_number)
+    test_model("model_parameters.txt", "train.csv")
     return 0
 
 if __name__ == "__main__":
