@@ -368,20 +368,23 @@ def read_model(model_file_name):
     for (index, string) in enumerate(ifile):
         lines.append(string.strip("\n"))
     ifile.close()
-    for i in range(len(lines)):
+    i = 0
+    while(i < len(lines)):
         if ("matrix" in lines[i]):
             a = lines[i].split(",")
             row_number = int(a[0].split(" = ")[1])
             col_number = int(a[1].split(" = ")[1])
             weight_matrix = np.zeros((row_number, col_number))
-            for j in range(i + 1, i + row_number):
+            for j in range(i + 1, i + row_number + 1):
                 weight_matrix[j - i - 1] = np.asarray(map(float, lines[j].split(",")))
             weight_matrices.append(weight_matrix)
             i = j+1
         elif("b_" in lines[i]):
             bias = np.asarray(map(float, lines[i+1].split(",")))
             biases.append(bias)
-            i = i+2
+            i += 2
+        else:
+            i += 1
     assert(len(weight_matrices) == len(biases))
     retention_probabilities = []
     if ("Retention" in lines[-1]):
@@ -492,7 +495,7 @@ def cross_validation(trainFileName, testFileName, process_number, batch_number):
         label = sample.y
         p = probability(sample, weight_matrices, biases, retention_probabilities, activation_function, category_number)
         prediction = np.argmax(p)
-        ofile.write(str(label) + "," + str(prediction) + "\n")
+        ofile.write(str(label) + "," + str(prediction) + ";" + ",".join(map(str, p)) + "\n")
         if (label == prediction):
             correct_count += 1
     accuracy = float(correct_count)/float(len(test_samples))
@@ -519,15 +522,19 @@ def test_model(modelFileName, testFileName):
     print "Model reading finished. Testing the model ... "
     correct_count = 0
     activation_function = relu
+    ofile = open("test_results.txt", "w")
     for i in range(len(test_samples)):
         sample = test_samples[i]
         label = sample.y
         p = probability(sample, weight_matrices, biases, retention_probabilities, activation_function, category_number)
         prediction = np.argmax(p)
+        ofile.write(str(label) + "," + str(prediction) + ";" + ",".join(map(str, p)) + "\n")
         if (label == prediction):
             correct_count += 1
     accuracy = float(correct_count)/float(len(test_samples))
     print "Accuracy = " + str(accuracy)
+    ofile.write("Accuracy = " + str(accuracy) + "\n")
+    ofile.close()
     print "Model testing finished. " 
 
 def main():
@@ -540,7 +547,7 @@ def main():
     batch_number = int(sys.argv[2])
     #train_model("train.csv", 1.0e-2, relu, relu_prime, process_number, True)
     #cross_validation("train.csv", "test.csv", process_number, batch_number)
-    test_model("model_parameters.txt", "train.csv")
+    test_model("model_parameters.txt", "test.csv")
     return 0
 
 if __name__ == "__main__":
